@@ -27,7 +27,7 @@ jobs:
           "aardio.exe=$exe" | Set-Content probe-summary.txt -Encoding utf8
           "version=$((Get-Item $exe).VersionInfo.FileVersion)" | Add-Content probe-summary.txt -Encoding utf8
 
-      - name: Run F5 smoke test
+      - name: Run aardio file through IDE command
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -40,24 +40,31 @@ jobs:
           file.close();
           '@ | Set-Content -Path $script -Encoding utf8
 
-          $ide = Start-Process -FilePath $env:AARDIO_EXE -PassThru
-          Start-Sleep -Seconds 5
-          $shell = New-Object -ComObject WScript.Shell
-          $activated = $shell.AppActivate($ide.Id)
-          "initialActivate=$activated pid=$($ide.Id)" | Add-Content probe-summary.txt -Encoding utf8
-          if (-not $activated) { throw 'cannot activate aardio IDE' }
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NativeMethods {
+              [DllImport("user32.dll", SetLastError=true)]
+              public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+          }
+          '@
 
-          Set-Clipboard -Value $script
-          $shell.SendKeys('^o')
-          Start-Sleep -Seconds 2
-          $shell.SendKeys('^v')
-          Start-Sleep -Milliseconds 300
-          $shell.SendKeys('{ENTER}')
-          Start-Sleep -Seconds 4
+          $psi = [System.Diagnostics.ProcessStartInfo]::new()
+          $psi.FileName = $env:AARDIO_EXE
+          $psi.WorkingDirectory = Split-Path $env:AARDIO_EXE
+          $psi.UseShellExecute = $false
+          $psi.ArgumentList.Add($script)
+          $ide = [System.Diagnostics.Process]::Start($psi)
+          Start-Sleep -Seconds 10
+          $ide.Refresh()
+          "pid=$($ide.Id) hwnd=$($ide.MainWindowHandle) title=$($ide.MainWindowTitle)" | Add-Content probe-summary.txt -Encoding utf8
 
-          $activated = $shell.AppActivate($ide.Id)
-          "runActivate=$activated" | Add-Content probe-summary.txt -Encoding utf8
-          $shell.SendKeys('{F5}')
+          $all = Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'aardio.exe' }
+          $all | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List | Out-String | Add-Content probe-summary.txt -Encoding utf8
+
+          if ($ide.MainWindowHandle -eq 0) { throw 'aardio IDE has no main window' }
+          $posted = [NativeMethods]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]33565,[IntPtr]0)
+          "postRunCommand=$posted" | Add-Content probe-summary.txt -Encoding utf8
 
           $ok = $false
           for ($i=0; $i -lt 50; $i++) {
@@ -67,8 +74,8 @@ jobs:
           "markerExists=$ok" | Add-Content probe-summary.txt -Encoding utf8
           if ($ok) { Get-Content $marker | Add-Content probe-summary.txt -Encoding utf8 }
 
-          "`n=== aardio processes ===" | Add-Content probe-summary.txt -Encoding utf8
-          Get-Process | Where-Object { $_.ProcessName -match 'aardio|ci-smoke' } | Select-Object Id,ProcessName,MainWindowTitle | Format-Table -AutoSize | Out-String | Add-Content probe-summary.txt -Encoding utf8
+          "`n=== final processes ===" | Add-Content probe-summary.txt -Encoding utf8
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'aardio.exe' } | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List | Out-String | Add-Content probe-summary.txt -Encoding utf8
           "`n=== build logs ===" | Add-Content probe-summary.txt -Encoding utf8
           Get-ChildItem -Path $PWD,(Split-Path $env:AARDIO_EXE) -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'build.*error.*log|error.*log' } | ForEach-Object {
             "FILE=$($_.FullName)" | Add-Content probe-summary.txt -Encoding utf8
@@ -76,7 +83,7 @@ jobs:
           }
 
           Get-Process | Where-Object { $_.ProcessName -match 'aardio|ci-smoke' } | Stop-Process -Force -ErrorAction SilentlyContinue
-          if (-not $ok) { throw 'F5 smoke marker was not created' }
+          if (-not $ok) { throw 'aardio run command did not create the marker' }
 
       - name: Upload probe report
         if: always()
