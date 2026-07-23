@@ -15,21 +15,17 @@ jobs:
   probe:
     runs-on: windows-latest
     steps:
-      - name: Download and inventory aardio
+      - name: Download aardio
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           Invoke-WebRequest -Uri 'https://d.aardio.com/ide/aardio.7z' -OutFile 'aardio.7z'
-          7z l aardio.7z | Select-String -Pattern '\.exe|\.dll|\.bat|\.cmd' | Select-Object -First 200 | Out-Host
-          7z x aardio.7z -oaardio -y | Out-Host
-          Write-Host '=== top-level ==='
-          Get-ChildItem -Path aardio | Select-Object Name,Mode,Length | Format-Table -AutoSize
-          Write-Host '=== executables ==='
-          Get-ChildItem -Path aardio -Recurse -File | Where-Object { $_.Extension -in '.exe','.com','.bat','.cmd' } | Select-Object FullName,Length | Format-Table -AutoSize
-          $exe = (Get-ChildItem -Path aardio -Recurse -File | Where-Object { $_.Name -ieq 'aardio.exe' -or $_.BaseName -ieq 'aardio' } | Select-Object -First 1).FullName
-          if (-not $exe) { throw 'aardio executable not found after inventory' }
+          7z x aardio.7z -oaardio -y | Out-Null
+          $exe = (Get-ChildItem -Path aardio -Recurse -File | Where-Object { $_.Name -ieq 'aardio.exe' } | Select-Object -First 1).FullName
+          if (-not $exe) { throw 'aardio.exe not found' }
           "AARDIO_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Get-Item $exe | Format-List FullName,Length,VersionInfo
+          "aardio.exe=$exe" | Set-Content probe-summary.txt -Encoding utf8
+          "version=$((Get-Item $exe).VersionInfo.FileVersion)" | Add-Content probe-summary.txt -Encoding utf8
 
       - name: Inspect executable strings
         shell: pwsh
@@ -38,36 +34,46 @@ jobs:
           import os,re
           path=os.environ['AARDIO_EXE']
           data=open(path,'rb').read()
-          ascii_strings=re.findall(rb'[\x20-\x7e]{5,}',data)
-          utf16_strings=[]
-          for m in re.finditer(rb'(?:[\x20-\x7e]\x00){5,}',data):
-              try: utf16_strings.append(m.group().decode('utf-16le'))
-              except: pass
-          keys=('compile','publish','build','run','command','project','aproj','debug','script','execute','console','/run','/build','/publish','-run','-build','-publish')
+          out=[]
+          keys=('compile','publish','build','run','command','project','aproj','debug','script','execute','console','autos','invoke')
           seen=set()
-          for raw in ascii_strings:
+          for raw in re.findall(rb'[\x20-\x7e]{5,}',data):
               s=raw.decode('latin1','ignore')
               low=s.lower()
               if any(k in low for k in keys) and s not in seen:
-                  seen.add(s); print('ASCII',s[:500])
-          for s in utf16_strings:
+                  seen.add(s); out.append('ASCII '+s[:500])
+          for m in re.finditer(rb'(?:[\x20-\x7e]\x00){5,}',data):
+              try: s=m.group().decode('utf-16le')
+              except: continue
               low=s.lower()
               if any(k in low for k in keys) and s not in seen:
-                  seen.add(s); print('UTF16',s[:500])
+                  seen.add(s); out.append('UTF16 '+s[:500])
+          open('probe-summary.txt','a',encoding='utf-8').write('\n=== FILTERED STRINGS ===\n'+'\n'.join(out[:800])+'\n')
           '@ | Set-Content inspect.py -Encoding utf8
           python inspect.py
 
       - name: Probe command-line switches
         shell: pwsh
         run: |
-          $switches = @('/?','-?','--help','/help','-help','/version','-version')
+          "`n=== SWITCH PROBE ===" | Add-Content probe-summary.txt -Encoding utf8
+          $switches = @('/?','-?','--help','/help','-help','/version','-version','/compile','-compile','/run','-run','/publish','-publish','/build','-build')
           foreach ($sw in $switches) {
-            Write-Host "=== $sw ==="
-            $out = Join-Path $PWD ("out-" + ($sw -replace '[^A-Za-z0-9]','_') + '.txt')
-            $err = Join-Path $PWD ("err-" + ($sw -replace '[^A-Za-z0-9]','_') + '.txt')
+            "--- $sw ---" | Add-Content probe-summary.txt -Encoding utf8
+            $out = Join-Path $PWD 'stdout.txt'
+            $err = Join-Path $PWD 'stderr.txt'
+            Remove-Item $out,$err -Force -ErrorAction SilentlyContinue
             $p = Start-Process -FilePath $env:AARDIO_EXE -ArgumentList $sw -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
-            if (-not $p.WaitForExit(5000)) { Stop-Process -Id $p.Id -Force }
-            if (Test-Path $out) { Get-Content $out }
-            if (Test-Path $err) { Get-Content $err }
-            Write-Host "ExitCode=$($p.ExitCode)"
+            $timedOut = -not $p.WaitForExit(3000)
+            if ($timedOut) { Stop-Process -Id $p.Id -Force; Start-Sleep -Milliseconds 300 }
+            "timedOut=$timedOut exitCode=$($p.ExitCode)" | Add-Content probe-summary.txt -Encoding utf8
+            if (Test-Path $out) { Get-Content $out | Add-Content probe-summary.txt -Encoding utf8 }
+            if (Test-Path $err) { Get-Content $err | Add-Content probe-summary.txt -Encoding utf8 }
           }
+
+      - name: Upload probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aardio-probe-report
+          path: probe-summary.txt
+          if-no-files-found: error
