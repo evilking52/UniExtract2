@@ -1,0 +1,72 @@
+namespace tests.paths;
+
+run = function(){
+    import tests.testlib;
+    import app.paths;
+    import app.environment;
+    import fsys;
+    import fsys.path;
+
+    var passed = true;
+
+    var result = ..tests.testlib.run("application path normalization",function(){
+        ..tests.testlib.expect(!!..app.paths.appRoot,true,"appRoot must be available");
+        ..tests.testlib.expect(..fsys.path.cmp(..app.paths.appRoot,..io.fullpath("/")),0,"appRoot mismatch");
+
+        var joined = ..app.paths.join("rules\extensions.ini");
+        ..tests.testlib.expect(..app.paths.isInsideRoot(joined),true,"joined path escaped root");
+    });
+    if(!result) passed = false;
+
+    result = ..tests.testlib.run("sibling prefix is rejected",function(){
+        var sibling = ..app.paths.appRoot ++ "-sibling\payload.bin";
+        var rejected = false;
+        try{
+            ..app.paths.assertInsideRoot(sibling);
+        }
+        catch(e){
+            rejected = true;
+        }
+        ..tests.testlib.expect(rejected,true,"sibling-prefix path was accepted");
+    });
+    if(!result) passed = false;
+
+    result = ..tests.testlib.run("portable directory write test",function(){
+        var testRoot = ..io.fullpath("/temp/test-environment-ok");
+        ..fsys.delete(testRoot);
+
+        var ok,err = ..app.environment.ensureWritable(testRoot);
+        ..tests.testlib.expect(ok,true,"writable root rejected: " ++ ..tostring(err));
+
+        for(i=1;#..app.environment.requiredDirs;1){
+            var dirPath = ..io.joinpath(testRoot,..app.environment.requiredDirs[i]);
+            ..tests.testlib.expect(!!..io.exist(dirPath),true,"required directory missing: " ++ dirPath);
+        }
+
+        ..fsys.delete(testRoot);
+    });
+    if(!result) passed = false;
+
+    result = ..tests.testlib.run("portable directory failure is structured",function(){
+        var testRoot = ..io.fullpath("/temp/test-environment-fail");
+        ..fsys.delete(testRoot);
+        ..fsys.createDir(testRoot);
+
+        var blockingPath = ..io.joinpath(testRoot,"config");
+        var file,openErr = ..io.open(blockingPath,"wb");
+        ..assert(file,openErr);
+        file.write("block directory creation");
+        file.close();
+
+        var ok,err = ..app.environment.ensureWritable(testRoot);
+        ..tests.testlib.expect(!!ok,false,"unwritable layout was accepted");
+        ..tests.testlib.expect(!!err,true,"structured error missing");
+        ..tests.testlib.expect(..fsys.path.cmp(err.path,blockingPath),0,"error path mismatch");
+        ..tests.testlib.expect(!!err.reason,true,"error reason missing");
+
+        ..fsys.delete(testRoot);
+    });
+    if(!result) passed = false;
+
+    return passed;
+}
