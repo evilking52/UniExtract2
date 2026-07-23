@@ -27,48 +27,40 @@ jobs:
           "aardio.exe=$exe" | Set-Content probe-summary.txt -Encoding utf8
           "version=$((Get-Item $exe).VersionInfo.FileVersion)" | Add-Content probe-summary.txt -Encoding utf8
 
-      - name: Inspect executable strings
+      - name: Run F5 smoke test
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Join-Path $PWD 'ci-smoke.aardio'
+          $marker = Join-Path $PWD 'ci-smoke-result.txt'
           @'
-          import os,re
-          path=os.environ['AARDIO_EXE']
-          data=open(path,'rb').read()
-          out=[]
-          keys=('compile','publish','build','run','command','project','aproj','debug','script','execute','console','autos','invoke')
-          seen=set()
-          for raw in re.findall(rb'[\x20-\x7e]{5,}',data):
-              s=raw.decode('latin1','ignore')
-              low=s.lower()
-              if any(k in low for k in keys) and s not in seen:
-                  seen.add(s); out.append('ASCII '+s[:500])
-          for m in re.finditer(rb'(?:[\x20-\x7e]\x00){5,}',data):
-              try: s=m.group().decode('utf-16le')
-              except: continue
-              low=s.lower()
-              if any(k in low for k in keys) and s not in seen:
-                  seen.add(s); out.append('UTF16 '+s[:500])
-          open('probe-summary.txt','a',encoding='utf-8').write('\n=== FILTERED STRINGS ===\n'+'\n'.join(out[:800])+'\n')
-          '@ | Set-Content inspect.py -Encoding utf8
-          python inspect.py
+          var file,err = io.open(io.fullpath("/ci-smoke-result.txt"),"wb");
+          assert(file,err);
+          file.write("AARDIO_F5_OK");
+          file.close();
+          '@ | Set-Content -Path $script -Encoding utf8
 
-      - name: Probe command-line switches
-        shell: pwsh
-        run: |
-          "`n=== SWITCH PROBE ===" | Add-Content probe-summary.txt -Encoding utf8
-          $switches = @('/?','-?','--help','/help','-help','/version','-version','/compile','-compile','/run','-run','/publish','-publish','/build','-build')
-          foreach ($sw in $switches) {
-            "--- $sw ---" | Add-Content probe-summary.txt -Encoding utf8
-            $out = Join-Path $PWD 'stdout.txt'
-            $err = Join-Path $PWD 'stderr.txt'
-            Remove-Item $out,$err -Force -ErrorAction SilentlyContinue
-            $p = Start-Process -FilePath $env:AARDIO_EXE -ArgumentList $sw -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
-            $timedOut = -not $p.WaitForExit(3000)
-            if ($timedOut) { Stop-Process -Id $p.Id -Force; Start-Sleep -Milliseconds 300 }
-            "timedOut=$timedOut exitCode=$($p.ExitCode)" | Add-Content probe-summary.txt -Encoding utf8
-            if (Test-Path $out) { Get-Content $out | Add-Content probe-summary.txt -Encoding utf8 }
-            if (Test-Path $err) { Get-Content $err | Add-Content probe-summary.txt -Encoding utf8 }
+          $ide = Start-Process -FilePath $env:AARDIO_EXE -ArgumentList ('"' + $script + '"') -PassThru
+          Start-Sleep -Seconds 5
+          $shell = New-Object -ComObject WScript.Shell
+          $activated = $shell.AppActivate($ide.Id)
+          "appActivate=$activated pid=$($ide.Id)" | Add-Content probe-summary.txt -Encoding utf8
+          if ($activated) {
+            Start-Sleep -Milliseconds 500
+            $shell.SendKeys('{F5}')
           }
+
+          $ok = $false
+          for ($i=0; $i -lt 40; $i++) {
+            if (Test-Path $marker) { $ok = $true; break }
+            Start-Sleep -Milliseconds 500
+          }
+          "markerExists=$ok" | Add-Content probe-summary.txt -Encoding utf8
+          if ($ok) { Get-Content $marker | Add-Content probe-summary.txt -Encoding utf8 }
+
+          Get-Process | Where-Object { $_.ProcessName -match 'aardio|ci-smoke' } | Select-Object Id,ProcessName,MainWindowTitle | Format-Table -AutoSize | Out-String | Add-Content probe-summary.txt -Encoding utf8
+          Get-Process | Where-Object { $_.ProcessName -match 'aardio|ci-smoke' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { throw 'F5 smoke marker was not created' }
 
       - name: Upload probe report
         if: always()
