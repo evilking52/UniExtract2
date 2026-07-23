@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<project ver="37" name="UniExtract2" libEmbed="true" ui="win" output="UniExtract.exe" FileDescription="Universal Extractor 2 for aardio" ProductName="UniExtract2" InternalName="UniExtract2" FileVersion="0.1.0.0" ProductVersion="0.1.0.0" publishDir="/dist/" dstrip="false">
+    <file name="main" path="main.aardio"/>
+    <folder name="app" path="app" embed="true" local="false" ignored="false"/>
+    <folder name="core" path="core" embed="true" local="false" ignored="false"/>
+    <folder name="handlers" path="handlers" embed="true" local="false" ignored="false"/>
+    <folder name="services" path="services" embed="true" local="false" ignored="false"/>
+    <folder name="ui" path="ui" embed="true" local="false" ignored="false"/>
+    <folder name="rules" path="rules" embed="false" local="true" ignored="false"/>
+    <folder name="config" path="config" embed="false" local="true" ignored="false"/>
+    <folder name="lang" path="lang" embed="false" local="true" ignored="false"/>
+    <folder name="passwords" path="passwords" embed="false" local="true" ignored="false"/>
+    <folder name="bin" path="bin" embed="false" local="true" ignored="false"/>
+    <folder name="def" path="def" embed="false" local="true" ignored="false"/>
+    <folder name="support" path="support" embed="false" local="true" ignored="false"/>
+    <folder name="tests" path="tests" embed="false" local="false" ignored="true"/>
+</project>
