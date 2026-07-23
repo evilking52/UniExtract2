@@ -71,16 +71,26 @@ jobs:
           '@
 
           $ide = Start-Process -FilePath $env:AARDIO_EXE -PassThru
-          Start-Sleep -Seconds 8
-          $ide.Refresh()
-          "pid=$($ide.Id) hwnd=$($ide.MainWindowHandle) title=$($ide.MainWindowTitle)" | Set-Content $diagnosticPath -Encoding utf8
-          if ($ide.MainWindowHandle -eq 0) { throw 'aardio IDE has no main window' }
+          $dialog = [IntPtr]::Zero
+          for ($attempt=1; $attempt -le 15; $attempt++) {
+              Start-Sleep -Seconds 1
+              $ide.Refresh()
+              if ($ide.MainWindowHandle -eq 0) { continue }
+              if ($attempt -eq 1) {
+                  "pid=$($ide.Id) hwnd=$($ide.MainWindowHandle) title=$($ide.MainWindowTitle)" | Set-Content $diagnosticPath -Encoding utf8
+              }
+              [AardioCiWin32]::SetForegroundWindow($ide.MainWindowHandle) | Out-Null
+              [AardioCiWin32]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]57601,[IntPtr]0) | Out-Null
+              Start-Sleep -Seconds 1
+              $dialog = [AardioCiWin32]::FindTop([uint32]$ide.Id,'#32770')
+              if ($dialog -ne [IntPtr]::Zero) { break }
+          }
 
-          [AardioCiWin32]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]57601,[IntPtr]0) | Out-Null
-          Start-Sleep -Seconds 3
-          $dialog = [AardioCiWin32]::FindTop([uint32]$ide.Id,'#32770')
           "dialog=$dialog title=$([AardioCiWin32]::Text($dialog))" | Add-Content $diagnosticPath -Encoding utf8
-          if ($dialog -eq [IntPtr]::Zero) { throw 'file open dialog not found' }
+          if ($dialog -eq [IntPtr]::Zero) {
+              ([AardioCiWin32]::Dump([uint32]$ide.Id)) | Add-Content $diagnosticPath -Encoding utf8
+              throw 'file open dialog not found after retries'
+          }
 
           [AardioCiWin32]::SetForegroundWindow($dialog) | Out-Null
           Set-Clipboard -Value $testScript
@@ -89,9 +99,13 @@ jobs:
           $shell.SendKeys('^v')
           Start-Sleep -Milliseconds 300
           $shell.SendKeys('{ENTER}')
-          Start-Sleep -Seconds 6
 
-          $ide.Refresh()
+          for ($i=0; $i -lt 20; $i++) {
+              Start-Sleep -Milliseconds 500
+              $ide.Refresh()
+              if ($ide.MainWindowTitle -notmatch '开始页|Start') { break }
+          }
+
           "afterOpen title=$($ide.MainWindowTitle)" | Add-Content $diagnosticPath -Encoding utf8
           [AardioCiWin32]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]33565,[IntPtr]0) | Out-Null
 
