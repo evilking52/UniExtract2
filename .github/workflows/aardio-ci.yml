@@ -71,25 +71,31 @@ jobs:
           '@
 
           $ide = Start-Process -FilePath $env:AARDIO_EXE -PassThru
-          $dialog = [IntPtr]::Zero
-          for ($attempt=1; $attempt -le 15; $attempt++) {
-              Start-Sleep -Seconds 1
+          for ($i=0; $i -lt 20; $i++) {
+              Start-Sleep -Milliseconds 500
               $ide.Refresh()
-              if ($ide.MainWindowHandle -eq 0) { continue }
-              if ($attempt -eq 1) {
-                  "pid=$($ide.Id) hwnd=$($ide.MainWindowHandle) title=$($ide.MainWindowTitle)" | Set-Content $diagnosticPath -Encoding utf8
-              }
+              if ($ide.MainWindowHandle -ne 0) { break }
+          }
+          if ($ide.MainWindowHandle -eq 0) { throw 'aardio IDE has no main window' }
+          Start-Sleep -Seconds 4
+          $ide.Refresh()
+          "pid=$($ide.Id) hwnd=$($ide.MainWindowHandle) title=$($ide.MainWindowTitle)" | Set-Content $diagnosticPath -Encoding utf8
+
+          $dialog = [IntPtr]::Zero
+          for ($attempt=1; $attempt -le 3 -and $dialog -eq [IntPtr]::Zero; $attempt++) {
               [AardioCiWin32]::SetForegroundWindow($ide.MainWindowHandle) | Out-Null
               [AardioCiWin32]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]57601,[IntPtr]0) | Out-Null
-              Start-Sleep -Seconds 1
-              $dialog = [AardioCiWin32]::FindTop([uint32]$ide.Id,'#32770')
-              if ($dialog -ne [IntPtr]::Zero) { break }
+              for ($poll=0; $poll -lt 10; $poll++) {
+                  Start-Sleep -Milliseconds 500
+                  $dialog = [AardioCiWin32]::FindTop([uint32]$ide.Id,'#32770')
+                  if ($dialog -ne [IntPtr]::Zero) { break }
+              }
           }
 
           "dialog=$dialog title=$([AardioCiWin32]::Text($dialog))" | Add-Content $diagnosticPath -Encoding utf8
           if ($dialog -eq [IntPtr]::Zero) {
               ([AardioCiWin32]::Dump([uint32]$ide.Id)) | Add-Content $diagnosticPath -Encoding utf8
-              throw 'file open dialog not found after retries'
+              throw 'file open dialog not found'
           }
 
           [AardioCiWin32]::SetForegroundWindow($dialog) | Out-Null
@@ -100,13 +106,23 @@ jobs:
           Start-Sleep -Milliseconds 300
           $shell.SendKeys('{ENTER}')
 
-          for ($i=0; $i -lt 20; $i++) {
+          $dialogClosed = $false
+          for ($i=0; $i -lt 30; $i++) {
               Start-Sleep -Milliseconds 500
               $ide.Refresh()
-              if ($ide.MainWindowTitle -notmatch '开始页|Start') { break }
+              $remainingDialog = [AardioCiWin32]::FindTop([uint32]$ide.Id,'#32770')
+              if ($remainingDialog -eq [IntPtr]::Zero -and $ide.MainWindowTitle -notmatch '开始页|Start') {
+                  $dialogClosed = $true
+                  break
+              }
           }
 
-          "afterOpen title=$($ide.MainWindowTitle)" | Add-Content $diagnosticPath -Encoding utf8
+          "afterOpen title=$($ide.MainWindowTitle) dialogClosed=$dialogClosed" | Add-Content $diagnosticPath -Encoding utf8
+          if (-not $dialogClosed) {
+              ([AardioCiWin32]::Dump([uint32]$ide.Id)) | Add-Content $diagnosticPath -Encoding utf8
+              throw 'file open dialog did not close cleanly'
+          }
+
           [AardioCiWin32]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]33565,[IntPtr]0) | Out-Null
 
           for ($i=0; $i -lt 60 -and -not (Test-Path $resultPath); $i++) {
