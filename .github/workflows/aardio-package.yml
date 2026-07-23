@@ -6,6 +6,9 @@ on:
       - refactor/aardio
     paths:
       - .github/workflows/aardio-package.yml
+  pull_request:
+    branches:
+      - master
   workflow_dispatch:
 
 jobs:
