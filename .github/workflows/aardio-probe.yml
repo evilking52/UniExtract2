@@ -21,7 +21,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Invoke-WebRequest -Uri 'https://d.aardio.com/ide/aardio.7z' -OutFile 'aardio.7z'
           7z l aardio.7z | Select-String -Pattern '\.exe|\.dll|\.bat|\.cmd' | Select-Object -First 200 | Out-Host
-          7z x aardio.7z -oardio -y | Out-Host
+          7z x aardio.7z -oaardio -y | Out-Host
           Write-Host '=== top-level ==='
           Get-ChildItem -Path aardio | Select-Object Name,Mode,Length | Format-Table -AutoSize
           Write-Host '=== executables ==='
