@@ -1,0 +1,22 @@
+// Task 1 smoke test: expected to fail until tests.testlib and app.constants exist.
+import console;
+import tests.testlib;
+import app.constants;
+
+var passed = tests.testlib.run("application constants", function(){
+    tests.testlib.expect(app.constants.APP_NAME, "UniExtract2", "APP_NAME mismatch");
+    tests.testlib.expect(app.constants.EXIT_NOT_WRITABLE, 8, "exit code mismatch");
+});
+
+console.log(passed ? "ALL TESTS PASSED" : "TESTS FAILED");
+
+var resultPath = string.getenv("AARDIO_TEST_RESULT");
+if(resultPath){
+    var resultFile,err = io.open(resultPath,"wb");
+    assert(resultFile,err);
+    resultFile.write(passed ? "PASS" : "FAIL");
+    resultFile.close();
+}
+else {
+    console.pause();
+}
