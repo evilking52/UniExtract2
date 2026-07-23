@@ -40,25 +40,41 @@ jobs:
           file.close();
           '@ | Set-Content -Path $script -Encoding utf8
 
-          $ide = Start-Process -FilePath $env:AARDIO_EXE -ArgumentList ('"' + $script + '"') -PassThru
+          $ide = Start-Process -FilePath $env:AARDIO_EXE -PassThru
           Start-Sleep -Seconds 5
           $shell = New-Object -ComObject WScript.Shell
           $activated = $shell.AppActivate($ide.Id)
-          "appActivate=$activated pid=$($ide.Id)" | Add-Content probe-summary.txt -Encoding utf8
-          if ($activated) {
-            Start-Sleep -Milliseconds 500
-            $shell.SendKeys('{F5}')
-          }
+          "initialActivate=$activated pid=$($ide.Id)" | Add-Content probe-summary.txt -Encoding utf8
+          if (-not $activated) { throw 'cannot activate aardio IDE' }
+
+          Set-Clipboard -Value $script
+          $shell.SendKeys('^o')
+          Start-Sleep -Seconds 2
+          $shell.SendKeys('^v')
+          Start-Sleep -Milliseconds 300
+          $shell.SendKeys('{ENTER}')
+          Start-Sleep -Seconds 4
+
+          $activated = $shell.AppActivate($ide.Id)
+          "runActivate=$activated" | Add-Content probe-summary.txt -Encoding utf8
+          $shell.SendKeys('{F5}')
 
           $ok = $false
-          for ($i=0; $i -lt 40; $i++) {
+          for ($i=0; $i -lt 50; $i++) {
             if (Test-Path $marker) { $ok = $true; break }
             Start-Sleep -Milliseconds 500
           }
           "markerExists=$ok" | Add-Content probe-summary.txt -Encoding utf8
           if ($ok) { Get-Content $marker | Add-Content probe-summary.txt -Encoding utf8 }
 
+          "`n=== aardio processes ===" | Add-Content probe-summary.txt -Encoding utf8
           Get-Process | Where-Object { $_.ProcessName -match 'aardio|ci-smoke' } | Select-Object Id,ProcessName,MainWindowTitle | Format-Table -AutoSize | Out-String | Add-Content probe-summary.txt -Encoding utf8
+          "`n=== build logs ===" | Add-Content probe-summary.txt -Encoding utf8
+          Get-ChildItem -Path $PWD,(Split-Path $env:AARDIO_EXE) -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'build.*error.*log|error.*log' } | ForEach-Object {
+            "FILE=$($_.FullName)" | Add-Content probe-summary.txt -Encoding utf8
+            Get-Content $_.FullName -ErrorAction SilentlyContinue | Add-Content probe-summary.txt -Encoding utf8
+          }
+
           Get-Process | Where-Object { $_.ProcessName -match 'aardio|ci-smoke' } | Stop-Process -Force -ErrorAction SilentlyContinue
           if (-not $ok) { throw 'F5 smoke marker was not created' }
 
