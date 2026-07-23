@@ -1,0 +1,125 @@
+name: aardio-ci
+
+on:
+  push:
+    branches:
+      - refactor/aardio
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download aardio
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-WebRequest -Uri 'https://d.aardio.com/ide/aardio.7z' -OutFile "$env:RUNNER_TEMP\aardio.7z"
+          7z x "$env:RUNNER_TEMP\aardio.7z" "-o$env:RUNNER_TEMP\aardio" -y | Out-Null
+          $exe = (Get-ChildItem -Path "$env:RUNNER_TEMP\aardio" -Recurse -File | Where-Object { $_.Name -ieq 'aardio.exe' } | Select-Object -First 1).FullName
+          if (-not $exe) { throw 'aardio.exe not found' }
+          "AARDIO_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run aardio tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testScript = (Resolve-Path 'tests\run.aardio').Path
+          $resultPath = Join-Path $PWD 'aardio-test-result.txt'
+          $diagnosticPath = Join-Path $PWD 'aardio-ci-diagnostic.txt'
+          Remove-Item $resultPath,$diagnosticPath -Force -ErrorAction SilentlyContinue
+          $env:AARDIO_TEST_RESULT = $resultPath
+
+          Add-Type @'
+          using System;
+          using System.Text;
+          using System.Collections.Generic;
+          using System.Runtime.InteropServices;
+          public static class AardioCiWin32 {
+              public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+              [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lp);
+              [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc cb, IntPtr lp);
+              [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+              [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+              [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int max);
+              [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int max);
+              [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wp, IntPtr lp);
+              [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+              public static string Text(IntPtr h){ var b=new StringBuilder(1024); GetWindowText(h,b,b.Capacity); return b.ToString(); }
+              public static string Class(IntPtr h){ var b=new StringBuilder(256); GetClassName(h,b,b.Capacity); return b.ToString(); }
+              public static IntPtr FindTop(uint pid, string cls){
+                  IntPtr found=IntPtr.Zero;
+                  EnumWindows((h,l)=>{ uint p; GetWindowThreadProcessId(h,out p); if(p==pid && IsWindowVisible(h) && (cls==null || Class(h)==cls)){ found=h; return false;} return true;},IntPtr.Zero);
+                  return found;
+              }
+              public static string Dump(uint pid){
+                  var lines=new List<string>();
+                  EnumWindows((h,l)=>{ uint p; GetWindowThreadProcessId(h,out p); if(p==pid && IsWindowVisible(h)){
+                      lines.Add($"TOP hwnd={h} class={Class(h)} text={Text(h)}");
+                      EnumChildWindows(h,(c,x)=>{ lines.Add($"  CHILD hwnd={c} class={Class(c)} text={Text(c)}"); return true;},IntPtr.Zero);
+                  } return true;},IntPtr.Zero);
+                  return string.Join("\r\n",lines);
+              }
+          }
+          '@
+
+          $ide = Start-Process -FilePath $env:AARDIO_EXE -PassThru
+          Start-Sleep -Seconds 8
+          $ide.Refresh()
+          "pid=$($ide.Id) hwnd=$($ide.MainWindowHandle) title=$($ide.MainWindowTitle)" | Set-Content $diagnosticPath -Encoding utf8
+          if ($ide.MainWindowHandle -eq 0) { throw 'aardio IDE has no main window' }
+
+          [AardioCiWin32]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]57601,[IntPtr]0) | Out-Null
+          Start-Sleep -Seconds 3
+          $dialog = [AardioCiWin32]::FindTop([uint32]$ide.Id,'#32770')
+          "dialog=$dialog title=$([AardioCiWin32]::Text($dialog))" | Add-Content $diagnosticPath -Encoding utf8
+          if ($dialog -eq [IntPtr]::Zero) { throw 'file open dialog not found' }
+
+          [AardioCiWin32]::SetForegroundWindow($dialog) | Out-Null
+          Set-Clipboard -Value $testScript
+          Start-Sleep -Milliseconds 300
+          $shell = New-Object -ComObject WScript.Shell
+          $shell.SendKeys('^v')
+          Start-Sleep -Milliseconds 300
+          $shell.SendKeys('{ENTER}')
+          Start-Sleep -Seconds 6
+
+          $ide.Refresh()
+          "afterOpen title=$($ide.MainWindowTitle)" | Add-Content $diagnosticPath -Encoding utf8
+          [AardioCiWin32]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]33565,[IntPtr]0) | Out-Null
+
+          for ($i=0; $i -lt 60 -and -not (Test-Path $resultPath); $i++) {
+              Start-Sleep -Milliseconds 500
+          }
+
+          ([AardioCiWin32]::Dump([uint32]$ide.Id)) | Add-Content $diagnosticPath -Encoding utf8
+          if (-not (Test-Path $resultPath)) {
+              throw 'aardio tests did not create AARDIO_TEST_RESULT; compilation or execution failed'
+          }
+
+          $result = (Get-Content $resultPath -Raw).Trim()
+          "result=$result" | Add-Content $diagnosticPath -Encoding utf8
+          if ($result -ne 'PASS') { throw "aardio tests returned $result" }
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aardio-ci-diagnostics
+          path: |
+            aardio-ci-diagnostic.txt
+            aardio-test-result.txt
+          if-no-files-found: ignore
+
+      - name: Stop aardio processes
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process | Where-Object { $_.ProcessName -match 'aardio|UniExtract' } | Stop-Process -Force -ErrorAction SilentlyContinue
