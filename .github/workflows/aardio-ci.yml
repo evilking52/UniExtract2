@@ -31,7 +31,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $testScript = (Resolve-Path 'tests\run.aardio').Path
+          $testSource = (Resolve-Path 'tests\run.aardio').Path
+          $testScript = Join-Path $PWD 'ci-tests.aardio'
+          Copy-Item $testSource $testScript -Force
           $resultPath = Join-Path $PWD 'aardio-test-result.txt'
           $diagnosticPath = Join-Path $PWD 'aardio-ci-diagnostic.txt'
           Remove-Item $resultPath,$diagnosticPath -Force -ErrorAction SilentlyContinue
