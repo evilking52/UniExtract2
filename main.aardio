@@ -1,0 +1,6 @@
+import win.ui;
+import app.constants;
+
+var winform = win.form(text=app.constants.APP_NAME;right=1000;bottom=680)
+winform.show();
+win.loopMessage();
