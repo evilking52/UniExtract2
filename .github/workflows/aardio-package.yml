@@ -32,3 +32,4 @@ jobs:
             aardio-inventory.txt
           compression-level: 0
           if-no-files-found: error
+          retention-days: 1
