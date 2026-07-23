@@ -33,12 +33,13 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $script = Join-Path $PWD 'ci-smoke.aardio'
           $marker = Join-Path $PWD 'ci-smoke-result.txt'
-          @'
-          var file,err = io.open(io.fullpath("/ci-smoke-result.txt"),"wb");
+          $markerForAardio = $marker.Replace('\','/')
+          @"
+          var file,err = io.open("$markerForAardio","wb");
           assert(file,err);
           file.write("AARDIO_F5_OK");
           file.close();
-          '@ | Set-Content -Path $script -Encoding utf8
+          "@ | Set-Content -Path $script -Encoding utf8
 
           Add-Type @'
           using System;
@@ -59,8 +60,7 @@ jobs:
           $ide.Refresh()
           "pid=$($ide.Id) hwnd=$($ide.MainWindowHandle) title=$($ide.MainWindowTitle)" | Add-Content probe-summary.txt -Encoding utf8
 
-          $all = Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'aardio.exe' }
-          $all | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List | Out-String | Add-Content probe-summary.txt -Encoding utf8
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'aardio.exe' } | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List | Out-String | Add-Content probe-summary.txt -Encoding utf8
 
           if ($ide.MainWindowHandle -eq 0) { throw 'aardio IDE has no main window' }
           $posted = [NativeMethods]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]33565,[IntPtr]0)
@@ -74,13 +74,10 @@ jobs:
           "markerExists=$ok" | Add-Content probe-summary.txt -Encoding utf8
           if ($ok) { Get-Content $marker | Add-Content probe-summary.txt -Encoding utf8 }
 
+          "`n=== marker search ===" | Add-Content probe-summary.txt -Encoding utf8
+          Get-ChildItem -Path $PWD,(Split-Path $env:AARDIO_EXE) -Recurse -Filter 'ci-smoke-result.txt' -ErrorAction SilentlyContinue | Select-Object FullName,Length | Format-Table -AutoSize | Out-String | Add-Content probe-summary.txt -Encoding utf8
           "`n=== final processes ===" | Add-Content probe-summary.txt -Encoding utf8
           Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'aardio.exe' } | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List | Out-String | Add-Content probe-summary.txt -Encoding utf8
-          "`n=== build logs ===" | Add-Content probe-summary.txt -Encoding utf8
-          Get-ChildItem -Path $PWD,(Split-Path $env:AARDIO_EXE) -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'build.*error.*log|error.*log' } | ForEach-Object {
-            "FILE=$($_.FullName)" | Add-Content probe-summary.txt -Encoding utf8
-            Get-Content $_.FullName -ErrorAction SilentlyContinue | Add-Content probe-summary.txt -Encoding utf8
-          }
 
           Get-Process | Where-Object { $_.ProcessName -match 'aardio|ci-smoke' } | Stop-Process -Force -ErrorAction SilentlyContinue
           if (-not $ok) { throw 'aardio run command did not create the marker' }
