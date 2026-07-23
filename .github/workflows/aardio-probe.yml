@@ -15,17 +15,21 @@ jobs:
   probe:
     runs-on: windows-latest
     steps:
-      - name: Download aardio
+      - name: Download and inventory aardio
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           Invoke-WebRequest -Uri 'https://d.aardio.com/ide/aardio.7z' -OutFile 'aardio.7z'
+          7z l aardio.7z | Select-String -Pattern '\.exe|\.dll|\.bat|\.cmd' | Select-Object -First 200 | Out-Host
           7z x aardio.7z -oardio -y | Out-Host
-          $exe = (Get-ChildItem -Path aardio -Recurse -Filter aardio.exe | Select-Object -First 1).FullName
-          if (-not $exe) { throw 'aardio.exe not found' }
+          Write-Host '=== top-level ==='
+          Get-ChildItem -Path aardio | Select-Object Name,Mode,Length | Format-Table -AutoSize
+          Write-Host '=== executables ==='
+          Get-ChildItem -Path aardio -Recurse -File | Where-Object { $_.Extension -in '.exe','.com','.bat','.cmd' } | Select-Object FullName,Length | Format-Table -AutoSize
+          $exe = (Get-ChildItem -Path aardio -Recurse -File | Where-Object { $_.Name -ieq 'aardio.exe' -or $_.BaseName -ieq 'aardio' } | Select-Object -First 1).FullName
+          if (-not $exe) { throw 'aardio executable not found after inventory' }
           "AARDIO_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Get-Item $exe | Format-List FullName,Length,VersionInfo
-          Get-ChildItem -Path (Split-Path $exe) | Select-Object Name,Length | Format-Table -AutoSize
 
       - name: Inspect executable strings
         shell: pwsh
