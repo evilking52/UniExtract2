@@ -1,0 +1,20 @@
+namespace tests.testlib;
+
+expect = function(actual, expected, message){
+    assert(actual === expected, message ++ ": expected=" ++ tostring(expected) ++ ", actual=" ++ tostring(actual));
+    return true;
+}
+
+run = function(name, fn){
+    io.stdout.write("[RUN] " ++ name ++ "\r\n");
+    var ok = true;
+    try{
+        fn();
+    }
+    catch(e){
+        ok = false;
+        io.stderr.write("[FAIL] " ++ name ++ ": " ++ tostring(e) ++ "\r\n");
+    }
+    if(ok) io.stdout.write("[PASS] " ++ name ++ "\r\n");
+    return ok;
+}
