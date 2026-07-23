@@ -23,121 +23,53 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Invoke-WebRequest -Uri 'https://d.aardio.com/ide/aardio.7z' -OutFile "$env:RUNNER_TEMP\aardio.7z"
           7z x "$env:RUNNER_TEMP\aardio.7z" "-o$env:RUNNER_TEMP\aardio" -y | Out-Null
-          $exe = (Get-ChildItem -Path "$env:RUNNER_TEMP\aardio" -Recurse -File | Where-Object { $_.Name -ieq 'aardio.exe' } | Select-Object -First 1).FullName
+          $exe = (Get-ChildItem "$env:RUNNER_TEMP\aardio" -Recurse -Filter aardio.exe | Select-Object -First 1).FullName
           if (-not $exe) { throw 'aardio.exe not found' }
-          "AARDIO_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AARDIO_EXE=$exe" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Run aardio tests
+      - name: Run aardio tests through startup trigger
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $testSource = (Resolve-Path 'tests\run.aardio').Path
-          $testScript = Join-Path $PWD 'ci-tests.aardio'
-          Copy-Item $testSource $testScript -Force
-          $resultPath = Join-Path $PWD 'aardio-test-result.txt'
-          $diagnosticPath = Join-Path $PWD 'aardio-ci-diagnostic.txt'
+          $appRoot = $PWD.Path
+          $testScript = (Resolve-Path 'tests\run.aardio').Path
+          $resultPath = Join-Path $appRoot 'aardio-test-result.txt'
+          $diagnosticPath = Join-Path $appRoot 'aardio-ci-diagnostic.txt'
           Remove-Item $resultPath,$diagnosticPath -Force -ErrorAction SilentlyContinue
-          $env:AARDIO_TEST_RESULT = $resultPath
 
-          Add-Type @'
-          using System;
-          using System.Text;
-          using System.Collections.Generic;
-          using System.Runtime.InteropServices;
-          public static class AardioCiWin32 {
-              public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-              [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lp);
-              [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc cb, IntPtr lp);
-              [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
-              [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-              [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int max);
-              [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int max);
-              [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wp, IntPtr lp);
-              [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-              public static string Text(IntPtr h){ var b=new StringBuilder(1024); GetWindowText(h,b,b.Capacity); return b.ToString(); }
-              public static string Class(IntPtr h){ var b=new StringBuilder(256); GetClassName(h,b,b.Capacity); return b.ToString(); }
-              public static IntPtr FindTop(uint pid, string cls){
-                  IntPtr found=IntPtr.Zero;
-                  EnumWindows((h,l)=>{ uint p; GetWindowThreadProcessId(h,out p); if(p==pid && IsWindowVisible(h) && (cls==null || Class(h)==cls)){ found=h; return false;} return true;},IntPtr.Zero);
-                  return found;
-              }
-              public static string Dump(uint pid){
-                  var lines=new List<string>();
-                  EnumWindows((h,l)=>{ uint p; GetWindowThreadProcessId(h,out p); if(p==pid && IsWindowVisible(h)){
-                      lines.Add($"TOP hwnd={h} class={Class(h)} text={Text(h)}");
-                      EnumChildWindows(h,(c,x)=>{ lines.Add($"  CHILD hwnd={c} class={Class(c)} text={Text(c)}"); return true;},IntPtr.Zero);
-                  } return true;},IntPtr.Zero);
-                  return string.Join("\r\n",lines);
-              }
+          $env:AARDIO_TEST_RESULT = $resultPath
+          $env:AARDIO_CI_TEST_SCRIPT = $testScript
+          $env:AARDIO_CI_APP_ROOT = $appRoot
+
+          $initPath = Join-Path (Split-Path $env:AARDIO_EXE) 'extensions\trigger\init.aardio'
+          $hook = @'
+          var __ciScript = string.getenv("AARDIO_CI_TEST_SCRIPT");
+          var __ciRoot = string.getenv("AARDIO_CI_APP_ROOT");
+          if(__ciScript && __ciRoot){
+              thread.invoke(function(scriptPath,appRoot){
+                  import ide;
+                  sleep(1500);
+                  ide.createProcessEx(appRoot,,scriptPath);
+              },__ciScript,__ciRoot);
           }
           '@
+          $source = Get-Content $initPath -Raw
+          if (-not $source.Contains('win.loopMessage();')) { throw 'trigger insertion point not found' }
+          $source = $source.Replace('win.loopMessage();', $hook + "`r`nwin.loopMessage();")
+          [System.IO.File]::WriteAllText($initPath,$source,[System.Text.UTF8Encoding]::new($false))
 
           $ide = Start-Process -FilePath $env:AARDIO_EXE -PassThru
-          for ($i=0; $i -lt 20; $i++) {
-              Start-Sleep -Milliseconds 500
-              $ide.Refresh()
-              if ($ide.MainWindowHandle -ne 0) { break }
-          }
-          if ($ide.MainWindowHandle -eq 0) { throw 'aardio IDE has no main window' }
-
-          # The IDE creates its main window before the ribbon command handlers are ready.
-          # The verified probe requires a fixed readiness window before ID_FILE_OPEN.
-          Start-Sleep -Seconds 10
-          $ide.Refresh()
-          "pid=$($ide.Id) hwnd=$($ide.MainWindowHandle) title=$($ide.MainWindowTitle)" | Set-Content $diagnosticPath -Encoding utf8
-
-          [AardioCiWin32]::SetForegroundWindow($ide.MainWindowHandle) | Out-Null
-          [AardioCiWin32]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]57601,[IntPtr]0) | Out-Null
-
-          $dialog = [IntPtr]::Zero
-          for ($poll=0; $poll -lt 20; $poll++) {
-              Start-Sleep -Milliseconds 500
-              $dialog = [AardioCiWin32]::FindTop([uint32]$ide.Id,'#32770')
-              if ($dialog -ne [IntPtr]::Zero) { break }
-          }
-
-          "dialog=$dialog title=$([AardioCiWin32]::Text($dialog))" | Add-Content $diagnosticPath -Encoding utf8
-          if ($dialog -eq [IntPtr]::Zero) {
-              ([AardioCiWin32]::Dump([uint32]$ide.Id)) | Add-Content $diagnosticPath -Encoding utf8
-              throw 'file open dialog not found'
-          }
-
-          [AardioCiWin32]::SetForegroundWindow($dialog) | Out-Null
-          Set-Clipboard -Value $testScript
-          Start-Sleep -Milliseconds 300
-          $shell = New-Object -ComObject WScript.Shell
-          $shell.SendKeys('^v')
-          Start-Sleep -Milliseconds 300
-          $shell.SendKeys('{ENTER}')
-
-          $dialogClosed = $false
-          for ($i=0; $i -lt 30; $i++) {
-              Start-Sleep -Milliseconds 500
-              $ide.Refresh()
-              $remainingDialog = [AardioCiWin32]::FindTop([uint32]$ide.Id,'#32770')
-              if ($remainingDialog -eq [IntPtr]::Zero -and $ide.MainWindowTitle -notmatch '开始页|Start') {
-                  $dialogClosed = $true
-                  break
-              }
-          }
-
-          "afterOpen title=$($ide.MainWindowTitle) dialogClosed=$dialogClosed" | Add-Content $diagnosticPath -Encoding utf8
-          if (-not $dialogClosed) {
-              ([AardioCiWin32]::Dump([uint32]$ide.Id)) | Add-Content $diagnosticPath -Encoding utf8
-              throw 'file open dialog did not close cleanly'
-          }
-
-          [AardioCiWin32]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]33565,[IntPtr]0) | Out-Null
-
-          for ($i=0; $i -lt 60 -and -not (Test-Path $resultPath); $i++) {
+          $ok = $false
+          for ($i=0; $i -lt 120; $i++) {
+              if (Test-Path $resultPath) { $ok = $true; break }
+              if ($ide.HasExited) { break }
               Start-Sleep -Milliseconds 500
           }
 
-          ([AardioCiWin32]::Dump([uint32]$ide.Id)) | Add-Content $diagnosticPath -Encoding utf8
-          if (-not (Test-Path $resultPath)) {
-              throw 'aardio tests did not create AARDIO_TEST_RESULT; compilation or execution failed'
-          }
+          "idePid=$($ide.Id) exited=$($ide.HasExited) marker=$ok" | Set-Content $diagnosticPath -Encoding utf8
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'aardio.exe' } | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List | Out-String | Add-Content $diagnosticPath -Encoding utf8
 
+          if (-not $ok) { throw 'aardio tests did not create AARDIO_TEST_RESULT' }
           $result = (Get-Content $resultPath -Raw).Trim()
           "result=$result" | Add-Content $diagnosticPath -Encoding utf8
           if ($result -ne 'PASS') { throw "aardio tests returned $result" }
@@ -156,4 +88,4 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          Get-Process | Where-Object { $_.ProcessName -match 'aardio|UniExtract' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process aardio -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
