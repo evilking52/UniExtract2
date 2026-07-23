@@ -79,19 +79,21 @@ jobs:
               if ($ide.MainWindowHandle -ne 0) { break }
           }
           if ($ide.MainWindowHandle -eq 0) { throw 'aardio IDE has no main window' }
-          Start-Sleep -Seconds 4
+
+          # The IDE creates its main window before the ribbon command handlers are ready.
+          # The verified probe requires a fixed readiness window before ID_FILE_OPEN.
+          Start-Sleep -Seconds 10
           $ide.Refresh()
           "pid=$($ide.Id) hwnd=$($ide.MainWindowHandle) title=$($ide.MainWindowTitle)" | Set-Content $diagnosticPath -Encoding utf8
 
+          [AardioCiWin32]::SetForegroundWindow($ide.MainWindowHandle) | Out-Null
+          [AardioCiWin32]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]57601,[IntPtr]0) | Out-Null
+
           $dialog = [IntPtr]::Zero
-          for ($attempt=1; $attempt -le 3 -and $dialog -eq [IntPtr]::Zero; $attempt++) {
-              [AardioCiWin32]::SetForegroundWindow($ide.MainWindowHandle) | Out-Null
-              [AardioCiWin32]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]57601,[IntPtr]0) | Out-Null
-              for ($poll=0; $poll -lt 10; $poll++) {
-                  Start-Sleep -Milliseconds 500
-                  $dialog = [AardioCiWin32]::FindTop([uint32]$ide.Id,'#32770')
-                  if ($dialog -ne [IntPtr]::Zero) { break }
-              }
+          for ($poll=0; $poll -lt 20; $poll++) {
+              Start-Sleep -Milliseconds 500
+              $dialog = [AardioCiWin32]::FindTop([uint32]$ide.Id,'#32770')
+              if ($dialog -ne [IntPtr]::Zero) { break }
           }
 
           "dialog=$dialog title=$([AardioCiWin32]::Text($dialog))" | Add-Content $diagnosticPath -Encoding utf8
