@@ -1,12 +1,18 @@
-// Task 1 smoke test: expected to fail until tests.testlib and app.constants exist.
 import console;
 import tests.testlib;
+import tests.paths;
 import app.constants;
 
-var passed = tests.testlib.run("application constants", function(){
+var passed = true;
+
+var result = tests.testlib.run("application constants", function(){
     tests.testlib.expect(app.constants.APP_NAME, "UniExtract2", "APP_NAME mismatch");
     tests.testlib.expect(app.constants.EXIT_NOT_WRITABLE, 8, "exit code mismatch");
 });
+if(!result) passed = false;
+
+result = tests.paths.run();
+if(!result) passed = false;
 
 console.log(passed ? "ALL TESTS PASSED" : "TESTS FAILED");
 
