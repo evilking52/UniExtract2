@@ -1,0 +1,66 @@
+name: aardio-probe
+
+on:
+  push:
+    branches:
+      - refactor/aardio
+    paths:
+      - .github/workflows/aardio-probe.yml
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - name: Download aardio
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-WebRequest -Uri 'https://d.aardio.com/ide/aardio.7z' -OutFile 'aardio.7z'
+          7z x aardio.7z -oardio -y | Out-Host
+          $exe = (Get-ChildItem -Path aardio -Recurse -Filter aardio.exe | Select-Object -First 1).FullName
+          if (-not $exe) { throw 'aardio.exe not found' }
+          "AARDIO_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Get-Item $exe | Format-List FullName,Length,VersionInfo
+          Get-ChildItem -Path (Split-Path $exe) | Select-Object Name,Length | Format-Table -AutoSize
+
+      - name: Inspect executable strings
+        shell: pwsh
+        run: |
+          @'
+          import os,re
+          path=os.environ['AARDIO_EXE']
+          data=open(path,'rb').read()
+          ascii_strings=re.findall(rb'[\x20-\x7e]{5,}',data)
+          utf16_strings=[]
+          for m in re.finditer(rb'(?:[\x20-\x7e]\x00){5,}',data):
+              try: utf16_strings.append(m.group().decode('utf-16le'))
+              except: pass
+          keys=('compile','publish','build','run','command','project','aproj','debug','script','execute','console','/run','/build','/publish','-run','-build','-publish')
+          seen=set()
+          for raw in ascii_strings:
+              s=raw.decode('latin1','ignore')
+              low=s.lower()
+              if any(k in low for k in keys) and s not in seen:
+                  seen.add(s); print('ASCII',s[:500])
+          for s in utf16_strings:
+              low=s.lower()
+              if any(k in low for k in keys) and s not in seen:
+                  seen.add(s); print('UTF16',s[:500])
+          '@ | Set-Content inspect.py -Encoding utf8
+          python inspect.py
+
+      - name: Probe command-line switches
+        shell: pwsh
+        run: |
+          $switches = @('/?','-?','--help','/help','-help','/version','-version')
+          foreach ($sw in $switches) {
+            Write-Host "=== $sw ==="
+            $out = Join-Path $PWD ("out-" + ($sw -replace '[^A-Za-z0-9]','_') + '.txt')
+            $err = Join-Path $PWD ("err-" + ($sw -replace '[^A-Za-z0-9]','_') + '.txt')
+            $p = Start-Process -FilePath $env:AARDIO_EXE -ArgumentList $sw -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+            if (-not $p.WaitForExit(5000)) { Stop-Process -Id $p.Id -Force }
+            if (Test-Path $out) { Get-Content $out }
+            if (Test-Path $err) { Get-Content $err }
+            Write-Host "ExitCode=$($p.ExitCode)"
+          }
