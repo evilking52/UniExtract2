@@ -27,7 +27,7 @@ jobs:
           "aardio.exe=$exe" | Set-Content probe-summary.txt -Encoding utf8
           "version=$((Get-Item $exe).VersionInfo.FileVersion)" | Add-Content probe-summary.txt -Encoding utf8
 
-      - name: Run aardio file through IDE command
+      - name: Open script through native dialog and run
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -43,28 +43,66 @@ jobs:
 
           Add-Type @'
           using System;
+          using System.Text;
+          using System.Collections.Generic;
           using System.Runtime.InteropServices;
-          public static class NativeMethods {
-              [DllImport("user32.dll", SetLastError=true)]
-              public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+          public static class Win32Probe {
+              public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+              [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lp);
+              [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc cb, IntPtr lp);
+              [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+              [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+              [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int max);
+              [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int max);
+              [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wp, IntPtr lp);
+              [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+              [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wp, string lp);
+              public static string Text(IntPtr h){ var b=new StringBuilder(1024); GetWindowText(h,b,b.Capacity); return b.ToString(); }
+              public static string Class(IntPtr h){ var b=new StringBuilder(256); GetClassName(h,b,b.Capacity); return b.ToString(); }
+              public static IntPtr FindTop(uint pid, string cls){
+                  IntPtr found=IntPtr.Zero;
+                  EnumWindows((h,l)=>{ uint p; GetWindowThreadProcessId(h,out p); if(p==pid && IsWindowVisible(h) && (cls==null || Class(h)==cls)){ found=h; return false;} return true;},IntPtr.Zero);
+                  return found;
+              }
+              public static string Dump(uint pid){
+                  var lines=new List<string>();
+                  EnumWindows((h,l)=>{ uint p; GetWindowThreadProcessId(h,out p); if(p==pid && IsWindowVisible(h)){
+                      lines.Add($"TOP hwnd={h} class={Class(h)} text={Text(h)}");
+                      EnumChildWindows(h,(c,x)=>{ lines.Add($"  CHILD hwnd={c} class={Class(c)} text={Text(c)}"); return true;},IntPtr.Zero);
+                  } return true;},IntPtr.Zero);
+                  return string.Join("\r\n",lines);
+              }
           }
           '@
 
-          $psi = [System.Diagnostics.ProcessStartInfo]::new()
-          $psi.FileName = $env:AARDIO_EXE
-          $psi.WorkingDirectory = Split-Path $env:AARDIO_EXE
-          $psi.UseShellExecute = $false
-          $psi.ArgumentList.Add($script)
-          $ide = [System.Diagnostics.Process]::Start($psi)
-          Start-Sleep -Seconds 10
+          $ide = Start-Process -FilePath $env:AARDIO_EXE -PassThru
+          Start-Sleep -Seconds 8
           $ide.Refresh()
           "pid=$($ide.Id) hwnd=$($ide.MainWindowHandle) title=$($ide.MainWindowTitle)" | Add-Content probe-summary.txt -Encoding utf8
-
-          Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'aardio.exe' } | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List | Out-String | Add-Content probe-summary.txt -Encoding utf8
-
           if ($ide.MainWindowHandle -eq 0) { throw 'aardio IDE has no main window' }
-          $posted = [NativeMethods]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]33565,[IntPtr]0)
-          "postRunCommand=$posted" | Add-Content probe-summary.txt -Encoding utf8
+
+          $openPosted = [Win32Probe]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]57601,[IntPtr]0)
+          "postFileOpen=$openPosted" | Add-Content probe-summary.txt -Encoding utf8
+          Start-Sleep -Seconds 3
+          ([Win32Probe]::Dump([uint32]$ide.Id)) | Add-Content probe-summary.txt -Encoding utf8
+
+          $dialog = [Win32Probe]::FindTop([uint32]$ide.Id,'#32770')
+          "dialog=$dialog title=$([Win32Probe]::Text($dialog))" | Add-Content probe-summary.txt -Encoding utf8
+          if ($dialog -eq [IntPtr]::Zero) { throw 'file open dialog not found' }
+          [Win32Probe]::SetForegroundWindow($dialog) | Out-Null
+          Set-Clipboard -Value $script
+          Start-Sleep -Milliseconds 300
+          $shell = New-Object -ComObject WScript.Shell
+          $shell.SendKeys('^v')
+          Start-Sleep -Milliseconds 300
+          $shell.SendKeys('{ENTER}')
+          Start-Sleep -Seconds 6
+
+          $ide.Refresh()
+          "afterOpen title=$($ide.MainWindowTitle)" | Add-Content probe-summary.txt -Encoding utf8
+          ([Win32Probe]::Dump([uint32]$ide.Id)) | Add-Content probe-summary.txt -Encoding utf8
+          $runPosted = [Win32Probe]::PostMessage($ide.MainWindowHandle,0x0111,[IntPtr]33565,[IntPtr]0)
+          "postRunCommand=$runPosted" | Add-Content probe-summary.txt -Encoding utf8
 
           $ok = $false
           for ($i=0; $i -lt 50; $i++) {
@@ -73,11 +111,6 @@ jobs:
           }
           "markerExists=$ok" | Add-Content probe-summary.txt -Encoding utf8
           if ($ok) { Get-Content $marker | Add-Content probe-summary.txt -Encoding utf8 }
-
-          "`n=== marker search ===" | Add-Content probe-summary.txt -Encoding utf8
-          Get-ChildItem -Path $PWD,(Split-Path $env:AARDIO_EXE) -Recurse -Filter 'ci-smoke-result.txt' -ErrorAction SilentlyContinue | Select-Object FullName,Length | Format-Table -AutoSize | Out-String | Add-Content probe-summary.txt -Encoding utf8
-          "`n=== final processes ===" | Add-Content probe-summary.txt -Encoding utf8
-          Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'aardio.exe' } | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List | Out-String | Add-Content probe-summary.txt -Encoding utf8
 
           Get-Process | Where-Object { $_.ProcessName -match 'aardio|ci-smoke' } | Stop-Process -Force -ErrorAction SilentlyContinue
           if (-not $ok) { throw 'aardio run command did not create the marker' }
